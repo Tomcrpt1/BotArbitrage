@@ -1,9 +1,12 @@
 """Simple funding rate arbitrage checker for Hyperliquid and Lighter.
 
-The script queries public HTTP APIs to pull current funding rates and
-best bid/ask quotes for a chosen perpetual market on both venues, then
-computes a rough funding-rate spread and an estimated profit for a given
-position size.
+The script reads:
+- Current funding rates from both exchanges
+- Best bid/ask prices to form a mid-price estimate
+
+Then it prints a basic funding-rate spread and a rough profit estimate
+for a provided USD notional. This is a **read-only** utility; it does not
+place any orders.
 """
 from __future__ import annotations
 
@@ -118,13 +121,21 @@ def fetch_lighter(market: str) -> Optional[MarketSnapshot]:
 
 
 def estimate_arbitrage(hyper: MarketSnapshot, lighter: MarketSnapshot, position_usd: float) -> None:
-    """Compute and print a simple funding-rate arbitrage suggestion."""
+    """Compute and print a simple funding-rate arbitrage suggestion.
+
+    Steps:
+    1) Compute absolute and percentage funding-rate differences
+    2) Compute an average mid price between venues (rough entry reference)
+    3) Estimate funding PnL for the provided USD position size
+    4) Print a suggested long/short direction if a spread exists
+    """
 
     funding_diff = hyper.funding_rate - lighter.funding_rate
     funding_diff_pct = funding_diff * 100
     avg_mid = (hyper.mid + lighter.mid) / 2
     profit_estimate = position_usd * funding_diff
 
+    # Present the raw inputs and intermediate calculations for transparency.
     print(f"Hyperliquid funding: {hyper.funding_rate:.6f}")
     print(f"Lighter funding:     {lighter.funding_rate:.6f}")
     print(f"Funding rate diff:   {funding_diff:.6f} ({funding_diff_pct:.4f}%)")
