@@ -95,10 +95,11 @@ def fetch_hyperliquid(market: str) -> Optional[MarketSnapshot]:
         return None
 
     try:
-        funding_rate = float(matching.get("funding"))
+        funding_obj = matching.get("funding") or {}
+        funding_rate = float(funding_obj.get("funding1"))
         mid_px_raw = matching.get("midPx") if matching.get("midPx") is not None else matching.get("markPx")
         mid_price = float(mid_px_raw) if mid_px_raw is not None else None
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, AttributeError) as exc:
         print(f"Unexpected Hyperliquid payload format: {exc}", file=sys.stderr)
         return None
 
@@ -118,44 +119,29 @@ def fetch_lighter(market: str) -> Optional[MarketSnapshot]:
         return None
 
     market_upper = market.upper()
-    funding_rate: Optional[float] = None
 
-    if isinstance(funding_resp, dict):
-        markets = funding_resp.get("data") or funding_resp.get("rates") or funding_resp.get("markets") or funding_resp.get("fundingRates")
-    else:
-        markets = funding_resp
+    # The expected payload is a dict with a "fundingRates" object keyed by symbol.
+    funding_container = funding_resp.get("fundingRates") if isinstance(funding_resp, dict) else None
+    if not isinstance(funding_container, dict):
+        print("Unexpected Lighter funding response format.", file=sys.stderr)
+        return None
 
-    if isinstance(markets, dict):
-        markets = markets.values()
-
-    if isinstance(markets, list) or isinstance(markets, tuple):
-        for entry in markets:
-            symbol = (
-                entry.get("symbol")
-                or entry.get("market")
-                or entry.get("name")
-                or entry.get("pair")
-            )
-            if symbol and symbol.upper() == market_upper:
-                try:
-                    funding_rate = float(
-                        entry.get("fundingRate")
-                        or entry.get("funding_rate")
-                        or entry.get("funding")
-                    )
-                except (TypeError, ValueError):
-                    funding_rate = None
-                break
-
-    if funding_rate is None:
+    entry = funding_container.get(market_upper) or funding_container.get(market_upper.lower())
+    if not isinstance(entry, dict) or "fundingRate" not in entry:
         print(f"Lighter market {market_upper} not found in funding rates.", file=sys.stderr)
         return None
 
-    # Try to pull a mid price from the optional order book snapshot.
-    orderbooks = http_get(f"{LIGHTER_API}/api/v1/orderBooks")
+    try:
+        funding_rate = float(entry.get("fundingRate"))
+    except (TypeError, ValueError):
+        print("Unexpected Lighter funding rate format.", file=sys.stderr)
+        return None
+
+    # Order-book derived mid price is optional.
     mid_price: Optional[float] = None
-    if orderbooks:
-        books = orderbooks.get("data") if isinstance(orderbooks, dict) else orderbooks
+    orderbooks = http_get(f"{LIGHTER_API}/api/v1/orderBooks")
+    if orderbooks and isinstance(orderbooks, dict):
+        books = orderbooks.get("data")
         if isinstance(books, list):
             for book in books:
                 symbol = (
