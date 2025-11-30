@@ -159,7 +159,19 @@ def estimate_arbitrage(hyper: MarketSnapshot, lighter: MarketSnapshot, position_
 
 def main() -> None:
     market = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_MARKET
-    position_usd = float(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_POSITION_USD
+
+    if len(sys.argv) > 2:
+        try:
+            position_usd = float(sys.argv[2])
+        except ValueError:
+            print(
+                "Invalid position size provided; falling back to default",
+                f"{DEFAULT_POSITION_USD} USD.",
+                file=sys.stderr,
+            )
+            position_usd = DEFAULT_POSITION_USD
+    else:
+        position_usd = DEFAULT_POSITION_USD
 
     hyper = fetch_hyperliquid(market)
     lighter = fetch_lighter(market)

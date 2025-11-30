@@ -5,7 +5,7 @@ Simple script to check for funding-rate arbitrage between Hyperliquid and Lighte
 Usage:
 
 ```bash
-python arbitrage.py [MARKET] [POSITION_USD]
+python3 arbitrage.py [MARKET] [POSITION_USD]
 ```
 
 - `MARKET` defaults to `ETH` if omitted.
