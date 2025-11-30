@@ -19,7 +19,11 @@ from typing import Optional
 
 
 HYPERLIQUID_API = "https://api.hyperliquid.xyz/info"
+
+LIGHTER_API = "https://mainnet.zklighter.elliot.ai"
+
 LIGHTER_API = "https://api.lighter.xyz/v1/public"
+
 DEFAULT_MARKET = "ETH"
 DEFAULT_POSITION_USD = 1000.0
 
@@ -60,6 +64,110 @@ def http_get(url: str) -> Optional[dict]:
 @dataclass
 class MarketSnapshot:
     funding_rate: float
+      
+    mid_price: Optional[float]
+
+    @property
+    def mid(self) -> Optional[float]:
+        return self.mid_price
+
+
+def fetch_hyperliquid(market: str) -> Optional[MarketSnapshot]:
+    """Fetch funding rate and mid price from Hyperliquid.
+
+    The `metaAndAssetCtxs` request returns both metadata and live asset contexts
+    in one call. Each asset context includes the current funding rate and
+    mid/mark prices. We select the requested market and pull `funding` and
+    either `midPx` or `markPx` for pricing.
+    """
+
+    resp = http_post(HYPERLIQUID_API, {"type": "metaAndAssetCtxs"})
+    if not resp:
+        return None
+
+    asset_ctxs = resp.get("assetCtxs") or []
+    market_upper = market.upper()
+
+    try:
+        matching = next(
+            ctx
+            for ctx in asset_ctxs
+            if ctx.get("name", ctx.get("coin", ctx.get("asset"))) == market_upper
+        )
+    except StopIteration:
+        print(f"Hyperliquid market {market_upper} not found in response.", file=sys.stderr)
+        return None
+
+    try:
+        funding_obj = matching.get("funding") or {}
+        funding_rate = float(funding_obj.get("funding1"))
+        mid_px_raw = matching.get("midPx") if matching.get("midPx") is not None else matching.get("markPx")
+        mid_price = float(mid_px_raw) if mid_px_raw is not None else None
+    except (TypeError, ValueError, AttributeError) as exc:
+        print(f"Unexpected Hyperliquid payload format: {exc}", file=sys.stderr)
+        return None
+
+    return MarketSnapshot(funding_rate=funding_rate, mid_price=mid_price)
+
+
+def fetch_lighter(market: str) -> Optional[MarketSnapshot]:
+    """Fetch funding rate (and, if available, a mid price) from Lighter.
+
+    Funding rates are provided by `/api/v1/funding-rates`, which returns rates
+    for all markets. We scan for the requested symbol. Pricing is optional and
+    can be derived from `/api/v1/orderBooks` when present.
+    """
+
+    funding_resp = http_get(f"{LIGHTER_API}/api/v1/funding-rates")
+    if not funding_resp:
+        return None
+
+    market_upper = market.upper()
+
+    # The expected payload is a dict with a "fundingRates" object keyed by symbol.
+    funding_container = funding_resp.get("fundingRates") if isinstance(funding_resp, dict) else None
+    if not isinstance(funding_container, dict):
+        print("Unexpected Lighter funding response format.", file=sys.stderr)
+        return None
+
+    entry = funding_container.get(market_upper) or funding_container.get(market_upper.lower())
+    if not isinstance(entry, dict) or "fundingRate" not in entry:
+        print(f"Lighter market {market_upper} not found in funding rates.", file=sys.stderr)
+        return None
+
+    try:
+        funding_rate = float(entry.get("fundingRate"))
+    except (TypeError, ValueError):
+        print("Unexpected Lighter funding rate format.", file=sys.stderr)
+        return None
+
+    # Order-book derived mid price is optional.
+    mid_price: Optional[float] = None
+    orderbooks = http_get(f"{LIGHTER_API}/api/v1/orderBooks")
+    if orderbooks and isinstance(orderbooks, dict):
+        books = orderbooks.get("data")
+        if isinstance(books, list):
+            for book in books:
+                symbol = (
+                    book.get("symbol")
+                    or book.get("market")
+                    or book.get("name")
+                    or book.get("pair")
+                )
+                if symbol and symbol.upper() == market_upper:
+                    try:
+                        bids = book.get("bids") or []
+                        asks = book.get("asks") or []
+                        if bids and asks:
+                            best_bid = float(bids[0][0])
+                            best_ask = float(asks[0][0])
+                            mid_price = (best_bid + best_ask) / 2
+                    except (TypeError, ValueError, IndexError):
+                        mid_price = None
+                    break
+
+    return MarketSnapshot(funding_rate=funding_rate, mid_price=mid_price)
+
     best_bid: float
     best_ask: float
 
@@ -120,6 +228,7 @@ def fetch_lighter(market: str) -> Optional[MarketSnapshot]:
     return MarketSnapshot(funding_rate=funding_rate, best_bid=best_bid, best_ask=best_ask)
 
 
+
 def estimate_arbitrage(hyper: MarketSnapshot, lighter: MarketSnapshot, position_usd: float) -> None:
     """Compute and print a simple funding-rate arbitrage suggestion.
 
@@ -132,14 +241,26 @@ def estimate_arbitrage(hyper: MarketSnapshot, lighter: MarketSnapshot, position_
 
     funding_diff = hyper.funding_rate - lighter.funding_rate
     funding_diff_pct = funding_diff * 100
+
+    mid_values = [m for m in (hyper.mid, lighter.mid) if m is not None]
+    avg_mid = sum(mid_values) / len(mid_values) if mid_values else None
+
     avg_mid = (hyper.mid + lighter.mid) / 2
+
     profit_estimate = position_usd * funding_diff
 
     # Present the raw inputs and intermediate calculations for transparency.
     print(f"Hyperliquid funding: {hyper.funding_rate:.6f}")
     print(f"Lighter funding:     {lighter.funding_rate:.6f}")
     print(f"Funding rate diff:   {funding_diff:.6f} ({funding_diff_pct:.4f}%)")
+
+    if avg_mid is not None:
+        print(f"Avg mid price:       {avg_mid:.2f}")
+    else:
+        print("Avg mid price:       unavailable")
+
     print(f"Avg mid price:       {avg_mid:.2f}")
+
     print(f"Position size (USD): {position_usd:.2f}\n")
 
     if abs(funding_diff) < 1e-6:
